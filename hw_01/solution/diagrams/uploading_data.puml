@@ -1,0 +1,37 @@
+@startuml
+actor User
+participant Client
+participant "API Service" as API
+participant "Auth / ACL" as Auth
+participant "Sync Engine" as Sync
+participant "Magic Pocket" as Storage
+database "Sharded MySQL" as Meta
+queue "Event Bus" as Bus
+participant "Async consumers" as Workers
+
+User -> Client : Select file
+Client -> API : Upload(file)
+API -> Auth : Check user
+Auth --> API : OK
+
+API -> Sync : Start upload
+Sync -> Sync : Split into 4 MB blocks
+Sync -> Storage : Write blocks
+Storage --> Sync : Blocks stored
+
+Sync -> Meta : Commit metadata + block references
+Meta --> Sync : Commit OK
+
+Sync -> Bus : file.uploaded
+Bus -> Workers : Async processing
+
+API --> Client : Upload success
+
+alt Event Bus unavailable
+    Sync --> API : Upload still successful
+    note right of Bus
+      Secondary processing is delayed.
+      File data is already persisted.
+    end note
+end
+@enduml

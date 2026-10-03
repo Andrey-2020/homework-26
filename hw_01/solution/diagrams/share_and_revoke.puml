@@ -1,0 +1,37 @@
+@startuml
+actor Owner
+actor Recipient
+participant Client
+participant "API Service" as API
+participant "Auth / ACL" as ACL
+database "Metadata / ACL state" as DB
+queue "Event Bus" as Bus
+participant "Notification Service" as Notify
+participant CDN
+
+Owner -> Client : Share file
+Client -> API : Update permissions
+API -> ACL : Validate owner rights
+ACL -> DB : Save ACL change
+DB --> ACL : OK
+ACL -> Bus : file.shared
+Bus -> Notify : Notify recipient
+Notify -> Recipient : File shared
+
+Recipient -> API : Download file
+API -> ACL : Check access
+ACL --> API : Allowed
+API --> Recipient : Signed URL
+Recipient -> CDN : Download
+
+Owner -> Client : Revoke access
+Client -> API : Revoke permission
+API -> ACL : Remove access
+ACL -> DB : Persist revoke
+ACL -> Bus : file.changed
+
+Recipient -> API : Download again
+API -> ACL : Check access
+ACL --> API : Denied
+API --> Recipient : 403 / access denied
+@enduml

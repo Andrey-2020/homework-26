@@ -1,0 +1,35 @@
+@startuml
+actor User
+participant Client
+participant "API Service" as API
+participant "Auth / ACL" as Auth
+participant "Metadata Service" as Meta
+participant CDN
+participant "Magic Pocket" as Storage
+
+User -> Client : Download file
+Client -> API : GET /file/{id}
+API -> Auth : Check read access
+Auth --> API : Allowed
+API -> Meta : Get version + block refs
+Meta --> API : Metadata
+
+API -> API : Create signed URL\nTTL = short
+API --> Client : Signed URL
+
+Client -> CDN : GET signed URL
+
+alt Cache hit
+    CDN --> Client : File
+else Cache miss
+    CDN -> Storage : Read blocks
+    Storage --> CDN : File data
+    CDN -> CDN : Cache file
+    CDN --> Client : File
+end
+
+alt Signed URL expired
+    Client -> CDN : GET expired URL
+    CDN --> Client : 403
+end
+@enduml
