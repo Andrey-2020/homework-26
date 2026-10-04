@@ -1,0 +1,72 @@
+@startuml
+title Сервис бронирования: взаимодействие сервисов
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+
+actor "Гость" as User
+
+rectangle "API Gateway" as Gateway
+
+together {
+rectangle "Search Service" as Search
+database "Search Read Model" as SearchDB
+}
+
+together {
+rectangle "Inventory Service" as Inventory
+database "Inventory DB" as InventoryDB
+}
+together {
+rectangle "Booking Service\n(Saga Orchestrator)" as Booking
+database "Booking DB" as BookingDB
+}
+together {
+rectangle "Payment Service" as Payment
+database "Payment DB" as PaymentDB
+cloud "Payment Provider" as Provider
+
+}
+together {
+rectangle "Catalog Service" as Catalog
+database "Catalog DB" as CatalogDB
+}
+rectangle "Notification Service" as Notification
+
+queue "Kafka\nEvent Bus" as Kafka
+
+
+
+
+
+User --> Gateway : REST\ncommands
+User --> Gateway : GraphQL\nsearch
+
+Booking --> Payment : gRPC\nCreateIntent / Refund
+
+Gateway --> Search : gRPC\nsearch query
+
+Gateway --> Booking : gRPC\ncreate / cancel
+Gateway -r-> Payment : gRPC\nconfirm payment
+Gateway -down-> Catalog : gRPC\ncatalog data
+
+Booking -r-> Inventory : gRPC\nHold / Confirm / Release
+
+Payment --> PaymentDB : tcp
+Catalog --> CatalogDB : tcp
+Search --> SearchDB : read
+Inventory --> InventoryDB : tcp
+Booking --> BookingDB : tcp
+
+Payment --> Kafka : payment.captured\npayment.failed
+Inventory --> Kafka : inventory.updated\ninventory.released
+Booking --> Kafka : booking.held\nbooking.confirmed\nbooking.cancelled
+Catalog --> Kafka : catalog.updated
+
+Kafka --> Search : async projection
+Kafka --> Notification : async email/SMS
+Kafka --> Booking : payment.captured\ninventory.released
+
+Payment --> Provider : REST API
+Provider --> Payment : REST webhook\npayment.captured / failed
+@enduml

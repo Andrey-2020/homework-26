@@ -1,0 +1,776 @@
+openapi: 3.0.3
+
+info:
+  title: Bookly Booking API
+  description: |
+    API сервиса бронирования объектов размещения.
+  version: 1.0.0
+
+servers:
+  - url: https://api.bookly.example
+    description: Production
+
+tags:
+  - name: Search
+    description: Поиск объектов размещения
+  - name: Booking
+    description: Создание и отмена бронирований
+  - name: Payment
+    description: Работа с оплатой
+  - name: Webhooks
+    description: Webhook от платёжного провайдера
+
+paths:
+
+  /graphql:
+    post:
+      tags:
+        - Search
+      summary: Поиск объектов размещения
+      description: |
+        Выполняет поиск объектов размещения через GraphQL.
+
+        Результат поиска не резервирует номер.
+        Окончательная проверка доступности выполняется Inventory Service
+        при создании бронирования.
+      operationId: searchProperties
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GraphQLRequest'
+            example:
+              query: |
+                query SearchProperties($input: SearchInput!) {
+                  searchProperties(input: $input) {
+                    total
+                    items {
+                      propertyId
+                      name
+                      stars
+                      geo {
+                        lat
+                        lon
+                      }
+                      minPrice {
+                        amount
+                        currency
+                      }
+                      availableRoomTypes
+                      thumbnailUrl
+                    }
+                  }
+                }
+              variables:
+                input:
+                  geo:
+                    lat: 59.9343
+                    lon: 30.3351
+                    radiusKm: 8
+                  checkIn: "2027-03-18"
+                  checkOut: "2027-03-22"
+                  guests: 3
+                  filters:
+                    starsMin: 4
+                    amenities:
+                      - SPA
+                      - BREAKFAST
+                  sort: PRICE_DESC
+                  page:
+                    limit: 15
+                    offset: 30
+      responses:
+        '200':
+          description: Результат поиска
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphQLSearchResponse'
+              example:
+                data:
+                  searchProperties:
+                    total: 74
+                    items:
+                      - propertyId: hotel_8472
+                        name: "Northern Lights Hotel"
+                        stars: 4
+                        geo:
+                          lat: 59.931
+                          lon: 30.347
+                        minPrice:
+                          amount: "12750.00"
+                          currency: RUB
+                        availableRoomTypes: 3
+                        thumbnailUrl: "https://cdn.bookly.example/property/hotel_8472.jpg"
+        '400':
+          description: Некорректный GraphQL-запрос
+        '429':
+          description: Превышен rate limit
+
+  /v1/bookings:
+    post:
+      tags:
+        - Booking
+      summary: Создать бронирование
+      description: |
+        Создаёт бронирование и запускает процесс Saga.
+
+        Повторный запрос с тем же Idempotency-Key
+        не должен создавать вторую бронь.
+      operationId: createBooking
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookingRequest'
+            example:
+              propertyId: hotel_5129
+              roomTypeId: suite_family_02
+              checkIn: "2027-03-18"
+              checkOut: "2027-03-22"
+              guests:
+                adults: 2
+                children: 1
+              priceSnapshot:
+                amount: "42600.00"
+                currency: RUB
+                ratePlanId: nonref_standard
+
+      responses:
+        '201':
+          description: Бронирование создано, номер временно удержан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateBookingResponse'
+              example:
+                bookingId: booking_7f92c1
+                status: HELD
+                hold:
+                  holdId: hold_4b71e8
+                  expiresAt: "2027-03-18T14:45:00Z"
+                payment:
+                  paymentIntentId: intent_95ac42
+                  status: REQUIRES_CONFIRMATION
+                amount:
+                  amount: "42600.00"
+                  currency: RUB
+
+        '401':
+          description: Отсутствует или недействителен JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: UNAUTHENTICATED
+                message: "Authentication required"
+
+        '409':
+          description: Конфликт состояния
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                soldOut:
+                  summary: Нет доступного номера
+                  value:
+                    code: SOLD_OUT
+                    message: "Room is not available"
+                priceChanged:
+                  summary: Цена изменилась
+                  value:
+                    code: PRICE_CHANGED
+                    message: "Price has changed"
+
+        '422':
+          description: Некорректные даты
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: INVALID_DATES
+                message: "Check-out date must be after check-in date"
+
+  /v1/payments/{paymentIntentId}/confirm:
+    post:
+      tags:
+        - Payment
+      summary: Подтвердить оплату
+      description: |
+        Инициирует подтверждение Payment Intent.
+      operationId: confirmPayment
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: paymentIntentId
+          in: path
+          required: true
+          description: Идентификатор Payment Intent
+          schema:
+            type: string
+            example: intent_95ac42
+
+        - $ref: '#/components/parameters/IdempotencyKey'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmPaymentRequest'
+            example:
+              bookingId: booking_7f92c1
+              returnUrl: "https://app.bookly.example/account/reservations/booking_7f92c1"
+
+      responses:
+        '200':
+          description: Запрос на подтверждение оплаты принят
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfirmPaymentResponse'
+              examples:
+                processing:
+                  summary: Оплата обрабатывается
+                  value:
+                    paymentIntentId: intent_95ac42
+                    bookingId: booking_7f92c1
+                    status: PROCESSING
+
+                requiresAction:
+                  summary: Требуется 3-D Secure
+                  value:
+                    paymentIntentId: intent_95ac42
+                    bookingId: booking_7f92c1
+                    status: REQUIRES_ACTION
+                    redirectUrl: "https://secure-pay.example/3ds/session/81fd27"
+
+        '401':
+          description: Пользователь не авторизован
+
+        '404':
+          description: Payment Intent не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: NOT_FOUND
+                message: "Payment intent not found"
+
+        '409':
+          description: Конфликт состояния оплаты
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                idempotencyConflict:
+                  value:
+                    code: IDEMPOTENCY_CONFLICT
+                    message: "Idempotency key is already used with another request"
+
+                holdExpired:
+                  value:
+                    code: HOLD_EXPIRED
+                    message: "Booking hold has expired"
+
+  /v1/webhooks/payment-provider:
+    post:
+      tags:
+        - Webhooks
+      summary: Webhook от платёжного провайдера
+      description: |
+        Принимает уведомление от внешнего платёжного провайдера
+        о результате операции.
+
+        Запрос проверяется по X-Provider-Signature.
+        Повторные webhook с одинаковым eventId должны обрабатываться
+        идемпотентно.
+      operationId: paymentProviderWebhook
+
+      parameters:
+        - name: X-Provider-Signature
+          in: header
+          required: true
+          description: HMAC-подпись webhook
+          schema:
+            type: string
+            example: "sha256=8eaf61cb4d7b9f42c1"
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentWebhookRequest'
+            example:
+              eventId: event_3d81f0
+              type: payment.captured
+              paymentIntentId: intent_95ac42
+              bookingId: booking_7f92c1
+              amount:
+                amount: "42600.00"
+                currency: RUB
+              occurredAt: "2027-03-18T14:31:27Z"
+
+      responses:
+        '200':
+          description: Webhook успешно принят
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received:
+                    type: boolean
+                    example: true
+
+        '401':
+          description: Некорректная подпись webhook
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: INVALID_SIGNATURE
+                message: "Invalid webhook signature"
+
+        '404':
+          description: Payment Intent не найден
+
+  /v1/bookings/{bookingId}/cancel:
+    post:
+      tags:
+        - Booking
+      summary: Отменить бронирование
+      description: |
+        Отменяет бронирование.
+
+        При необходимости запускается компенсация Saga:
+        - освобождение номера через Inventory Service;
+        - возврат средств через Payment Service.
+      operationId: cancelBooking
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: bookingId
+          in: path
+          required: true
+          description: Идентификатор бронирования
+          schema:
+            type: string
+            example: booking_7f92c1
+
+        - $ref: '#/components/parameters/IdempotencyKey'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelBookingRequest'
+            example:
+              reason: GUEST_REQUEST
+              comment: "Изменились даты поездки, необходимо отменить бронь"
+
+      responses:
+        '200':
+          description: Бронирование отменено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelBookingResponse'
+              example:
+                bookingId: booking_7f92c1
+                status: CANCELLED
+                refund:
+                  refundId: refund_b624a9
+                  status: SUCCEEDED
+                  amount:
+                    amount: "42600.00"
+                    currency: RUB
+                inventory:
+                  released: true
+
+        '404':
+          description: Бронь не найдена или недоступна пользователю
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: NOT_FOUND
+                message: "Booking not found"
+
+        '422':
+          description: Отмена запрещена политикой тарифа
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: CANCEL_NOT_ALLOWED
+                message: "Cancellation is not allowed for this rate plan"
+
+
+components:
+
+  securitySchemes:
+
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT пользователя
+
+  parameters:
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Уникальный ключ идемпотентности
+      schema:
+        type: string
+        format: uuid
+        example: "dsfsdf2-sad2-123s-sdfds-123123123dsfdsf"
+
+  schemas:
+
+    GraphQLRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          description: GraphQL query
+        operationName:
+          type: string
+          description: Название операции
+        variables:
+          type: object
+          additionalProperties: true
+          description: Переменные GraphQL
+
+    GraphQLSearchResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            searchProperties:
+              type: object
+              properties:
+                total:
+                  type: integer
+                  example: 74
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/PropertySearchItem'
+
+    PropertySearchItem:
+      type: object
+      properties:
+        propertyId:
+          type: string
+          example: hotel_8472
+        name:
+          type: string
+          example: "Northern Lights Hotel"
+        stars:
+          type: integer
+          example: 4
+        geo:
+          $ref: '#/components/schemas/GeoPoint'
+        minPrice:
+          $ref: '#/components/schemas/Money'
+        availableRoomTypes:
+          type: integer
+          example: 3
+        thumbnailUrl:
+          type: string
+          format: uri
+          example: "https://cdn.bookly.example/property/hotel_8472.jpg"
+
+    GeoPoint:
+      type: object
+      properties:
+        lat:
+          type: number
+          format: double
+          example: 59.931
+        lon:
+          type: number
+          format: double
+          example: 30.347
+
+    Money:
+      type: object
+      required:
+        - amount
+        - currency
+      properties:
+        amount:
+          type: string
+          example: "42600.00"
+        currency:
+          type: string
+          example: RUB
+
+    GuestCount:
+      type: object
+      required:
+        - adults
+      properties:
+        adults:
+          type: integer
+          minimum: 1
+          example: 2
+        children:
+          type: integer
+          minimum: 0
+          example: 1
+
+    PriceSnapshot:
+      type: object
+      required:
+        - amount
+        - currency
+        - ratePlanId
+      properties:
+        amount:
+          type: string
+          example: "42600.00"
+        currency:
+          type: string
+          example: RUB
+        ratePlanId:
+          type: string
+          example: nonref_standard
+
+    CreateBookingRequest:
+      type: object
+      required:
+        - propertyId
+        - roomTypeId
+        - checkIn
+        - checkOut
+        - guests
+        - priceSnapshot
+      properties:
+        propertyId:
+          type: string
+          example: hotel_5129
+        roomTypeId:
+          type: string
+          example: suite_family_02
+        checkIn:
+          type: string
+          format: date
+          example: "2027-03-18"
+        checkOut:
+          type: string
+          format: date
+          example: "2027-03-22"
+        guests:
+          $ref: '#/components/schemas/GuestCount'
+        priceSnapshot:
+          $ref: '#/components/schemas/PriceSnapshot'
+
+    HoldInfo:
+      type: object
+      properties:
+        holdId:
+          type: string
+          example: hold_4b71e8
+        expiresAt:
+          type: string
+          format: date-time
+          example: "2027-03-18T14:45:00Z"
+
+    PaymentInfo:
+      type: object
+      properties:
+        paymentIntentId:
+          type: string
+          example: intent_95ac42
+        status:
+          type: string
+          enum:
+            - REQUIRES_CONFIRMATION
+            - PROCESSING
+            - REQUIRES_ACTION
+            - SUCCEEDED
+            - FAILED
+          example: REQUIRES_CONFIRMATION
+
+    CreateBookingResponse:
+      type: object
+      required:
+        - bookingId
+        - status
+        - hold
+        - payment
+        - amount
+      properties:
+        bookingId:
+          type: string
+          example: booking_7f92c1
+        status:
+          type: string
+          example: HELD
+        hold:
+          $ref: '#/components/schemas/HoldInfo'
+        payment:
+          $ref: '#/components/schemas/PaymentInfo'
+        amount:
+          $ref: '#/components/schemas/Money'
+
+    ConfirmPaymentRequest:
+      type: object
+      required:
+        - bookingId
+        - returnUrl
+      properties:
+        bookingId:
+          type: string
+          example: booking_7f92c1
+        returnUrl:
+          type: string
+          format: uri
+          example: "https://app.bookly.example/account/reservations/booking_7f92c1"
+
+    ConfirmPaymentResponse:
+      type: object
+      required:
+        - paymentIntentId
+        - bookingId
+        - status
+      properties:
+        paymentIntentId:
+          type: string
+          example: intent_95ac42
+        bookingId:
+          type: string
+          example: booking_7f92c1
+        status:
+          type: string
+          example: PROCESSING
+        redirectUrl:
+          type: string
+          format: uri
+          nullable: true
+          example: "https://secure-pay.example/3ds/session/81fd27"
+
+    PaymentWebhookRequest:
+      type: object
+      required:
+        - eventId
+        - type
+        - paymentIntentId
+        - bookingId
+        - amount
+        - occurredAt
+      properties:
+        eventId:
+          type: string
+          example: event_3d81f0
+        type:
+          type: string
+          enum:
+            - payment.captured
+            - payment.failed
+          example: payment.captured
+        paymentIntentId:
+          type: string
+          example: intent_95ac42
+        bookingId:
+          type: string
+          example: booking_7f92c1
+        amount:
+          $ref: '#/components/schemas/Money'
+        occurredAt:
+          type: string
+          format: date-time
+          example: "2027-03-18T14:31:27Z"
+
+    CancelBookingRequest:
+      type: object
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          enum:
+            - GUEST_REQUEST
+            - PARTNER_REQUEST
+            - ADMIN
+          example: GUEST_REQUEST
+        comment:
+          type: string
+          example: "Изменились даты поездки, необходимо отменить бронь"
+
+    RefundInfo:
+      type: object
+      nullable: true
+      properties:
+        refundId:
+          type: string
+          example: refund_b624a9
+        status:
+          type: string
+          example: SUCCEEDED
+        amount:
+          $ref: '#/components/schemas/Money'
+
+    InventoryReleaseInfo:
+      type: object
+      properties:
+        released:
+          type: boolean
+          example: true
+
+    CancelBookingResponse:
+      type: object
+      required:
+        - bookingId
+        - status
+        - refund
+        - inventory
+      properties:
+        bookingId:
+          type: string
+          example: booking_7f92c1
+        status:
+          type: string
+          example: CANCELLED
+        refund:
+          $ref: '#/components/schemas/RefundInfo'
+        inventory:
+          $ref: '#/components/schemas/InventoryReleaseInfo'
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          example: SOLD_OUT
+        message:
+          type: string
+          example: "Room is not available"
