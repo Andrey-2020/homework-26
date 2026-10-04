@@ -1,0 +1,27 @@
+@startuml
+participant "Device A" as A
+participant "Device B" as B
+participant "Sync Engine" as Sync
+participant "Metadata Service" as Meta
+participant "Magic Pocket" as Storage
+queue "Event Bus" as Bus
+
+A -> A : Offline edit
+B -> B : Offline edit
+
+A -> Sync : Version A
+B -> Sync : Version B
+
+Sync -> Sync : Compare versions
+
+alt No conflict
+    Sync -> Storage : Store changed blocks
+    Sync -> Meta : Commit merged/new version
+else Conflict
+    Sync -> Sync : Apply conflict policy
+    Sync -> Storage : Store conflict version(s)
+    Sync -> Meta : Commit result
+end
+
+Sync -> Bus : file.changed
+@enduml

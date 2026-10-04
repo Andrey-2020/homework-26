@@ -1,0 +1,26 @@
+@startuml
+actor User
+participant "Device A\nClient" as A
+participant "Sync Engine" as Sync
+participant "Magic Pocket" as Storage
+participant "Metadata Service" as Meta
+queue "Event Bus" as Bus
+participant "Notification Service" as Notify
+participant "Device B\nClient" as B
+
+User -> A : Edit 100 MB file by 1 byte
+A -> Sync : Detect local change
+Sync -> Sync : Compare block hashes
+Sync -> Storage : Upload changed 4 MB block
+Storage --> Sync : Stored
+
+Sync -> Meta : Commit version N+1
+Meta --> Sync : OK
+
+Sync -> Bus : file.changed
+Bus -> Notify : Deliver event
+Notify -> B : New version available
+B -> Meta : Get new metadata
+B -> Storage : Download changed block
+Storage --> B : Changed block
+@enduml
