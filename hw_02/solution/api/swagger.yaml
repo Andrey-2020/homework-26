@@ -350,79 +350,57 @@ paths:
 
   /v1/bookings/{bookingId}/cancel:
     post:
-      tags:
+      tags: 
         - Booking
-      summary: Отменить бронирование
+      summary: Запрос на отмену бронирования
       description: |
-        Отменяет бронирование.
-
-        При необходимости запускается компенсация Saga:
-        - освобождение номера через Inventory Service;
-        - возврат средств через Payment Service.
+        Возвращает значение 202 начала процесса отмены-возврата.
+        Если платеж уже был списан, состояние REFUND_PENDING сохраняется до тех пор, пока не будет получен
+        payment.refunded webhook/event, подтверждающий возврат средств. Успешный возврат средств
+        никогда не сообщается синхронно до подтверждения провайдером.
       operationId: cancelBooking
-      security:
-        - bearerAuth: []
-
+      security: [{ bearerAuth: [] }]
       parameters:
         - name: bookingId
           in: path
           required: true
-          description: Идентификатор бронирования
-          schema:
-            type: string
-            example: booking_7f92c1
-
+          schema: { type: string }
+          example: booking_7f92c1
         - $ref: '#/components/parameters/IdempotencyKey'
-
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/CancelBookingRequest'
-            example:
-              reason: GUEST_REQUEST
-              comment: "Изменились даты поездки, необходимо отменить бронь"
-
+            schema: { $ref: '#/components/schemas/CancelBookingRequest' }
+            example: { reason: GUEST_REQUEST, comment: 'Изменились даты поездки' }
       responses:
-        '200':
-          description: Бронирование отменено
+        '202':
+          description: Процесс отмены/возврата денежных средств принят, но не обязательно завершен
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/CancelBookingResponse'
-              example:
-                bookingId: booking_7f92c1
-                status: CANCELLED
-                refund:
-                  refundId: refund_b624a9
-                  status: SUCCEEDED
-                  amount:
-                    amount: "42600.00"
-                    currency: RUB
-                inventory:
-                  released: true
-
-        '404':
-          description: Бронь не найдена или недоступна пользователю
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                code: NOT_FOUND
-                message: "Booking not found"
-
-        '422':
-          description: Отмена запрещена политикой тарифа
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                code: CANCEL_NOT_ALLOWED
-                message: "Cancellation is not allowed for this rate plan"
-
+              schema: { $ref: '#/components/schemas/CancellationAcceptedResponse' }
+              examples:
+                refundPending:
+                  summary: Оплата списана; возврат в процессе
+                  value:
+                    bookingId: booking_7f92c1
+                    cancellationRequestId: cnl_a42b1e
+                    status: REFUND_PENDING
+                    refund:
+                      refundId: refund_b624a9
+                      status: PROCESSING
+                      amount: { amount: '42600.00', currency: RUB }
+                cancellationPending:
+                  summary: No captured payment; cancellation is being completed
+                  value:
+                    bookingId: booking_7f92c1
+                    cancellationRequestId: cnl_c81d72
+                    status: CANCELLATION_PENDING
+                    refund: null
+        '401': { description: Missing or invalid JWT }
+        '404': { description: Booking not found or not accessible }
+        '409': { description: Idempotency key reused with a different request }
+        '422': { description: Cancellation not allowed by the rate plan }
 
 components:
 
@@ -631,6 +609,15 @@ components:
           example: booking_7f92c1
         status:
           type: string
+          description: Текущий статус бронирования
+          enum:
+            - PENDING
+            - HELD
+            - CONFIRMED
+            - CANCELLED
+            - EXPIRED
+            - REFUND_PENDING
+            - FAILED
           example: HELD
         hold:
           $ref: '#/components/schemas/HoldInfo'
@@ -762,6 +749,23 @@ components:
         inventory:
           $ref: '#/components/schemas/InventoryReleaseInfo'
 
+    CancellationAcceptedResponse:
+      type: object
+      required: [bookingId, cancellationRequestId, status]
+      properties:
+        bookingId: { type: string, example: booking_7f92c1 }
+        cancellationRequestId: { type: string, example: cnl_a42b1e }
+        status:
+          type: string
+          enum: [CANCELLATION_PENDING, REFUND_PENDING]
+        refund:
+          type: object
+          nullable: true
+          properties:
+            refundId: { type: string, example: refund_b624a9 }
+            status: { type: string, enum: [PROCESSING, SUCCEEDED, FAILED], example: PROCESSING }
+            amount: { $ref: '#/components/schemas/Money' }
+    
     ErrorResponse:
       type: object
       required:

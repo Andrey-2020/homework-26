@@ -108,16 +108,22 @@
 
 ### Kafka topics, события, продюсеры и консьюмеры
 
-| Topic              | Событие              | Продюсер              | Консьюмеры                                    | Назначение                                      |
-| ------------------ | -------------------- | --------------------- | --------------------------------------------- | ----------------------------------------------- |
-| `booking.events`   | `booking.created`    | **Booking Service**   | **Notification Service**                      | Создана новая бронь                             |
-| `booking.events`   | `booking.held`       | **Booking Service**   | **Notification Service**                      | Для брони успешно установлен soft-hold          |
-| `booking.events`   | `booking.confirmed`  | **Booking Service**   | **Search Service**, **Notification Service**  | Бронь окончательно подтверждена                 |
-| `booking.events`   | `booking.cancelled`  | **Booking Service**   | **Search Service**, **Notification Service**  | Бронь отменена                                  |
-| `payment.events`   | `payment.captured`   | **Payment Service**   | **Booking Service**, **Notification Service** | Платёж успешно списан                           |
-| `payment.events`   | `payment.failed`     | **Payment Service**   | **Booking Service**, **Notification Service** | Платёж завершился ошибкой                       |
-| `inventory.events` | `inventory.released` | **Inventory Service** | **Booking Service**, **Search Service**       | Номер освобождён после отмены или истечения TTL |
-
+| Topic | Событие | Продюсер | Консьюмеры | Назначение |
+|---|---|---|---|---|
+| `catalog.events` | `catalog.updated` | **Catalog Service** | **Search Service** | Обновление объектов, типов номеров и тарифов в поисковой read-модели |
+| `inventory.events` | `inventory.updated` | **Inventory Service** | **Search Service** | Изменение доступности: hold, confirm или иное изменение инвентаря |
+| `inventory.events` | `inventory.released` | **Inventory Service** | **Booking Service**, **Search Service** | Номер освобождён; Search обновляет доступность, Booking обрабатывает истечение hold |
+| `booking.events` | `booking.created` | **Booking Service** | **Notification Service** | Создана бронь |
+| `booking.events` | `booking.held` | **Booking Service** | **Notification Service** | Для брони установлен soft-hold |
+| `booking.events` | `booking.confirmed` | **Booking Service** | **Notification Service** | Бронь окончательно подтверждена |
+| `booking.events` | `booking.cancellation_requested` | **Booking Service** | **Notification Service** | Запрос на отмену принят в обработку |
+| `booking.events` | `booking.refund_pending` | **Booking Service** | **Notification Service** | Отмена принята, возврат ещё обрабатывается |
+| `booking.events` | `booking.cancelled` | **Booking Service** | **Notification Service** | Отмена завершена; необходимые действия, включая возврат, подтверждены |
+| `booking.events` | `booking.failed` | **Booking Service** | **Notification Service** | Бронь не состоялась после компенсации |
+| `payment.events` | `payment.captured` | **Payment Service** | **Booking Service** | Провайдер подтвердил списание; Booking пытается подтвердить hold |
+| `payment.events` | `payment.failed` | **Payment Service** | **Booking Service** | Оплата завершилась ошибкой; Booking запускает компенсацию |
+| `payment.events` | `payment.refunded` | **Payment Service** | **Booking Service**, **Notification Service** | Провайдер подтвердил успешный возврат денег |
+| `payment.events` | `payment.refund_failed` | **Payment Service** | **Booking Service**, **Notification Service** | Возврат завершился ошибкой; нужна повторная обработка/сверка и уведомление о проблеме |
 ---
 
 ## 6. Паттерны
@@ -129,17 +135,34 @@
 Основной сценарий:
 
 1. Создать бронь в статусе `PENDING`.
-2. Выполнить `Inventory.Hold`.
+2. Выполнить `Inventory.Hold` и получить holdId и expiresAt. Удержание действует ограниченное время, например 15 минут.
 3. Выполнить `Payment.CreateIntent`.
-4. Перевести бронь в `HELD`.
+4. Перевести бронь в `HELD`. Пользователь подтверждает платёж, при необходимости проходит 3-D Secure.
 5. После `payment.captured` выполнить `Inventory.Confirm`.
-6. Перевести бронь в `CONFIRMED`.
+6. Если Inventory успешно подтвердил удержание, перевести бронирование в статус CONFIRMED и опубликовать booking.confirmed.
 
 Компенсации:
 
+- Не удалось создать Payment Intent -> `Inventory.Release`
+- Получено событие payment.failed до списания -> Освободить hold, если он ещё активен
 - не удалось создать оплату → `Inventory.Release`;
 - платёж не прошёл → `Inventory.Release`;
 - отмена подтверждённой брони → `Payment.Refund` + `Inventory.Release`.
+- Платёж успешно списан, но Inventory.Confirm вернул HOLD_EXPIRED -> Запустить возврат через Payment.Refund
+- Возврат не удалось завершить -> Оставить бронь в REFUND_PENDING, повторить обработку и запустить сверку с Payment
+
+Оплата после истечения hold:
+
+Подтверждение оплаты может прийти уже после окончания 3-D Secure или длительной обработки платежа.
+
+- Inventory Service освобождает просроченный hold и публикует inventory.released.
+- Booking Service переводит бронь в EXPIRED, если она ещё не подтверждена.
+- Если позднее приходит payment.captured, Booking Service не игнорирует событие, даже если статус брони уже EXPIRED.
+- Booking вызывает Inventory.Confirm(holdId). Если удержание уже истекло или освобождено, Inventory возвращает ошибку HOLD_EXPIRED либо соответствующую ошибку недоступности hold.
+- Booking переводит бронь в REFUND_PENDING и вызывает Payment.Refund с идемпотентным ключом, например refund:{bookingId}.
+- После подтверждённого возврата Payment Service публикует payment.refunded. Booking переводит бронь в FAILED и публикует booking.failed.
+- Если возврат не завершился, статус остаётся REFUND_PENDING. Система повторяет обработку по политике повторов и выполняет сверку с платёжным провайдером.
+- Статус FAILED в этой ветке означает, что бронь не состоялась, а возврат успешно завершён. До подтверждения возврата используется REFUND_PENDING.
 
 Saga используется вместо распределённой транзакции, потому что сервисы имеют отдельные базы данных и внешние зависимости.
 

@@ -58,14 +58,14 @@ Search --> SearchDB : read
 Inventory --> InventoryDB : tcp
 Booking --> BookingDB : tcp
 
-Payment --> Kafka : payment.captured\npayment.failed
+Payment --> Kafka : payment.captured\npayment.failed\npayment.refunded\npayment.refund_failed
 Inventory --> Kafka : inventory.updated\ninventory.released
-Booking --> Kafka : booking.held\nbooking.confirmed\nbooking.cancelled
+Booking --> Kafka : booking.created\nbooking.held\nbooking.confirmed\nbooking.cancellation_requested\nbooking.refund_pending\nbooking.cancelled / booking.failed
 Catalog --> Kafka : catalog.updated
 
-Kafka --> Search : async projection
+Kafka --> Search : catalog.updated\ninventory.*\n(async read-model projection)
 Kafka --> Notification : async email/SMS
-Kafka --> Booking : payment.captured\ninventory.released
+Kafka --> Booking : payment.*\ninventory.released\n(Saga events)
 
 Payment --> Provider : REST API
 Provider --> Payment : REST webhook\npayment.captured / failed
