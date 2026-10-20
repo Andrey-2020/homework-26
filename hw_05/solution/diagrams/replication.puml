@@ -1,0 +1,54 @@
+@startuml
+title Booking.com — репликация критичных PostgreSQL-кластеров
+ left to right direction
+ skinparam componentStyle rectangle
+ skinparam shadowing false
+ skinparam defaultFontSize 12
+
+ component "Booking / Inventory / Payment\nservices" as App #FFE4B5
+ rectangle "Routing layer" as Routing {
+   component "HA proxy / writer endpoint\nwrite → Primary" as Proxy
+ }
+ rectangle "Основной регион" as RegionA {
+   rectangle "AZ-A" as AZA {
+     database "PostgreSQL\nPrimary" as Primary
+   }
+   rectangle "AZ-B" as AZB {
+     database "PostgreSQL\nSync standby" as SyncReplica
+   }
+   component "Failover controller\nDCS quorum + fencing" as Controller
+ }
+ rectangle "DR-регион" as RegionB {
+   database "PostgreSQL\nAsync standby" as DRReplica
+ }
+ cloud "Изолированный backup storage\nencrypted snapshots + WAL/PITR" as Backup
+
+ App --> Proxy : SQL connection
+ Proxy --> Primary : writes + read-after-write
+ Primary --> SyncReplica : WAL / synchronous ACK\ncommit после flush standby
+ Primary --> DRReplica : WAL / async\nRPO budget ≤ 5 min
+ Primary --> Backup : snapshots + WAL archive
+ SyncReplica --> Backup : recovery source (опц.)
+ Controller --> Primary : health / leader state
+ Controller --> SyncReplica : promote после fencing\n
+ Controller ..> Proxy : обновить writer endpoint
+
+ note bottom of SyncReplica
+   Потеря одной AZ:
+   автоматический failover;
+   цель RTO ≤ 3 мин, RPO ≈ 0
+ end note
+
+ note bottom of DRReplica
+   Потеря региона:
+   promote только после fencing
+   старого региона и запуска DR runbook.
+   Асинхронная репликация не обещает RPO = 0.
+ end note
+
+ note right of Proxy
+   Критические операции Saga
+   читают актуальное состояние
+   с Primary, не с read replica.
+ end note
+@enduml
