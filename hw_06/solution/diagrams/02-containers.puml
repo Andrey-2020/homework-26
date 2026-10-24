@@ -1,0 +1,70 @@
+@startuml
+left to right direction
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam defaultTextAlignment center
+skinparam wrapWidth 200
+
+actor "Пользователь" as User
+actor "Оператор" as Ops
+cloud "APNs / FCM /\nWeb Push" as PushProvider
+cloud "Почтовый\nпровайдер" as Mail
+cloud "S3 Object Storage" as S3
+
+rectangle "Мессенджер" {
+  component "Load Balancer /\nAPI Gateway" as GW
+  component "WebSocket\nGateway" as WSG
+  component "Auth Service" as Auth
+  component "Conversation Service" as Conv
+  component "Chat Service" as Chat
+  component "Outbox Publisher" as Outbox
+  component "Delivery Workers" as Delivery
+  component "Presence Service" as Presence
+  component "Push Service" as Push
+  component "Media Service" as Media
+  queue "Kafka\n(delivery / push)" as Kafka
+  database "Auth DB\nPostgreSQL HA" as AuthDB
+  database "Conversation DB\nPostgreSQL HA" as ConvDB
+  database "32 message shards\nPostgreSQL HA" as MsgDB
+  database "Redis Cluster\npresence / cache" as Redis
+  component "Observability\nmetrics / logs / traces" as Obs
+}
+
+User --> GW : HTTPS REST
+User <--> WSG : WSS / TLS
+User --> S3 : PUT / GET media\nby presigned URL
+Ops --> GW : separate admin ingress
+GW --> Auth : REST / gRPC
+GW --> Conv : REST / gRPC
+GW --> Chat : REST / gRPC
+GW --> Media : REST
+WSG --> Auth : token/session check
+Chat --> Conv : membership / ACL
+Chat --> MsgDB : transaction: message + outbox
+Outbox --> MsgDB : read unpublished events
+Outbox --> Kafka : publish MessageAccepted
+Kafka --> Delivery : consumer group
+Delivery --> Conv : members / mute flags
+Delivery --> Presence : gateway lookup
+Delivery --> WSG : realtime event
+Delivery --> Kafka : enqueue push task
+Kafka --> Push : push consumer group
+Push --> Auth : device push tokens
+Push --> PushProvider : HTTPS API
+Auth --> AuthDB
+Conv --> ConvDB
+Presence --> Redis
+Media --> S3 : sign URL / HEAD metadata
+Auth --> Mail : verification / recovery
+GW ..> Obs : metrics / traces
+WSG ..> Obs
+Chat ..> Obs
+Delivery ..> Obs
+
+legend bottom
+  PostgreSQL — источник истины; Redis — эфемерный кэш.
+  Kafka доставляет события минимум один раз; consumers должны быть идемпотентны.
+  Байты медиа не проходят через Gateway или Chat Service.
+endlegend
+@enduml

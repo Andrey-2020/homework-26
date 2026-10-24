@@ -1,0 +1,33 @@
+@startuml
+left to right direction
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam defaultTextAlignment center
+
+component "Chat Service" as Chat
+component "Shard Router\nshard = hash(chat_id) % 32" as Router
+Chat --> Router : chat_id
+
+package "32 PostgreSQL message shards" {
+  database "Shard 0\nPrimary" as P0
+  database "Shard 0\nSync replica\n(AZ-B)" as S0
+  database "Shard 0\nAsync read replica" as A0
+  database "..." as Dots
+  database "Shard 31\nPrimary" as P31
+  database "Shard 31\nSync replica\n(AZ-C)" as S31
+  database "Shard 31\nAsync read replica" as A31
+}
+Router --> P0 : hash → shard 0
+Router --> P31 : hash → shard 31
+P0 ..> S0 : synchronous WAL
+P0 ..> A0 : asynchronous WAL
+P31 ..> S31 : synchronous WAL
+P31 ..> A31 : asynchronous WAL
+
+note bottom of Router
+  Каждый chat_id маршрутизируется в один шард.
+  История чата и read_cursors находятся локально.
+  Для отказа одной AZ sync replica расположена в другой зоне.
+end note
+@enduml

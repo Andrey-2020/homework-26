@@ -1,0 +1,46 @@
+@startuml
+ title GroupWave — отправка и доставка сообщения
+ autonumber
+ actor "Отправитель" as Sender
+ participant "Realtime Gateway" as RT
+ participant "Message Service" as Msg
+ participant "Chat Service" as Chat
+ database "DynamoDB" as DDB
+ participant "DynamoDB Streams Relay" as Relay
+ queue "Kafka" as Kafka
+ participant "Delivery Worker" as Worker
+ participant "Presence Service" as Presence
+ participant "Gateway получателя" as RT2
+ participant "Push Service" as Push
+
+ Sender -> RT : WSS message.send(clientMessageId, chatId, text)
+ RT -> Msg : validate + persist command
+ Msg -> Chat : check membership / write permission
+ Chat --> Msg : allowed
+ Msg -> DDB : conditional write (dedup by clientMessageId)
+ DDB --> Msg : committed / existing message
+ Msg --> RT : message.accepted(messageId, cursor)
+ RT --> Sender : WSS ACK after durable write
+
+ DDB --> Relay : stream record after commit
+ Relay -> Kafka : message.persisted(eventId, chatId, messageId)
+ Kafka -> Worker : consume event (at-least-once)
+ Worker -> Chat : get active member IDs
+ Chat --> Worker : member list
+ loop each recipient user/device
+   Worker -> Presence : lookup active gateway
+   alt active WSS connection
+     Presence --> Worker : gatewayId
+     Worker -> RT2 : internal deliver(messageId)
+     RT2 --> Worker : accepted for socket write
+   else offline / no route
+     Worker -> Kafka : enqueue push.jobs (if not muted)
+   end
+ end
+ Kafka -> Push : consume push.jobs
+ Push --> Sender : (provider sends to recipient device) push notification
+ note over Worker,Kafka
+   Delivery is at-least-once. Consumer and client deduplicate by eventId/messageId.
+   History sync via REST repairs gaps after reconnect.
+ end note
+@enduml

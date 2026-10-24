@@ -1,0 +1,45 @@
+@startuml
+skinparam shadowing false
+autonumber
+actor "Отправитель" as Sender
+participant "WebSocket Gateway" as GW
+participant "Chat Service" as Chat
+database "PostgreSQL shard\n(messages + outbox)" as DB
+participant "Outbox Publisher" as Outbox
+queue "Kafka" as Kafka
+participant "Delivery Worker" as Worker
+participant "Presence / Redis" as Presence
+participant "WebSocket Gateway\nполучателя" as ReceiverGW
+participant "Push Service" as Push
+participant "APNs / FCM" as Provider
+
+Sender -> GW : send_message(chat_id, client_message_id, text)
+GW -> Chat : проверить сессию и лимиты
+Chat -> DB : BEGIN; INSERT message + outbox; COMMIT
+DB --> Chat : commit подтверждён
+Chat --> GW : message_accepted(message_id, message_seq)
+GW --> Sender : ACK
+
+Outbox -> DB : получить не опубликованные события
+DB --> Outbox : MessageAccepted(event_id, chat_id, message_id)
+Outbox -> Kafka : publish (idempotent event_id)
+Kafka -> Worker : consume MessageAccepted
+Worker -> DB : прочитать сообщение (по message_id)
+Worker -> Presence : найти gateway_id участников
+Presence --> Worker : online devices / offline devices
+Worker -> ReceiverGW : realtime message.new
+ReceiverGW --> Worker : enqueue/write result
+Worker -> Kafka : push-task для offline devices
+Kafka -> Push : consume push task
+Push -> Provider : отправить push notification
+Provider --> Push : accepted / retryable error
+
+note over Chat,DB
+  Сообщение и outbox фиксируются
+  одной транзакцией. ACK только после commit.
+end note
+note over Kafka,Push
+  At-least-once: возможны повторы.
+  Consumers дедуплицируют по event_id/message_id.
+end note
+@enduml

@@ -1,0 +1,29 @@
+@startuml
+ title C4 Context — GroupWave Messenger
+ left to right direction
+ skinparam shadowing false
+ skinparam packageStyle rectangle
+ skinparam defaultFontSize 13
+
+ actor "Пользователь\n(Web / iOS / Android)" as User
+ actor "Оператор\nплатформы" as Operator
+ rectangle "GroupWave\nМессенджер с групповыми чатами" as System
+ cloud "FCM / APNs\nPush-провайдеры" as Push
+ cloud "Email provider" as Email
+ cloud "Object storage + CDN" as Media
+
+ User --> System : HTTPS REST\nуправление/история
+ User <--> System : WSS\nсообщения и realtime-события
+ Operator --> System : HTTPS Admin\nMFA + отдельная роль
+ System --> Push : HTTPS / HTTP2\nофлайн-push
+ System --> Email : HTTPS API\nподтверждение email
+ System --> Media : HTTPS\npresigned object access
+ Push --> User : системные push-уведомления
+ Media --> User : HTTPS загрузка/скачивание
+
+ legend bottom
+   Контекст: внешние акторы и интеграции относительно GroupWave.
+   WSS — WebSocket over TLS; REST — HTTPS API.
+   Пунктир/цвет не несут дополнительной семантики.
+ endlegend
+@enduml

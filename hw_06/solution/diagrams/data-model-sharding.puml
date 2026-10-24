@@ -1,0 +1,93 @@
+@startuml
+ title GroupWave — модель данных и распределение сообщений
+ left to right direction
+ skinparam shadowing false
+ skinparam packageStyle rectangle
+ skinparam defaultFontSize 12
+ allowmixing
+
+ package "Identity DB — PostgreSQL" {
+   entity "users" as Users {
+     * user_id : UUID <<PK>>
+     --
+     email : text <<UQ>>
+     credential_ref : text
+     status : text
+     created_at : timestamp
+   }
+   entity "devices" as Devices {
+     * device_id : UUID <<PK>>
+     --
+     user_id : UUID <<FK>>
+     platform : text
+     push_token_hash : text
+     last_seen_at : timestamp
+   }
+   Users ||--o{ Devices : owns
+ }
+
+ package "Chat DB — PostgreSQL" {
+   entity "chats" as Chats {
+     * chat_id : UUID <<PK>>
+     --
+     type : direct|group
+     owner_id : UUID
+     title : text
+     created_at : timestamp
+   }
+   entity "chat_members" as Members {
+     * chat_id : UUID <<PK part>>
+     * user_id : UUID <<PK part>>
+     --
+     role : owner|admin|member
+     status : text
+     muted_until : timestamp
+   }
+   Chats ||--o{ Members : has members
+ }
+
+ package "Message Store — DynamoDB" {
+   entity "messages" as Messages {
+     * PK : CHAT#chatId#BUCKET#YYYYMM
+     * SK : timestamp#messageId
+     --
+     sender_id : UUID
+     client_message_id : string
+     text/media_ids : payload
+     reply_to : messageId
+   }
+   entity "message_dedup" as Dedup {
+     * PK : senderId#clientMessageId
+     --
+     message_id : string
+     expires_at : timestamp
+   }
+   entity "read_cursors" as Cursors {
+     * PK : chatId#userId
+     --
+     last_delivered_cursor : string
+     last_read_cursor : string
+   }
+ }
+
+ package "Logical DynamoDB partitioning" {
+   rectangle "Hash(PK)" as Router
+   database "Partition group A\nCHAT#...#2026-10" as PA
+   database "Partition group B\nCHAT#...#2026-11" as PB
+   database "Partition group N\nother chat/month keys" as PN
+   Router --> PA : hash key
+   Router --> PB : hash key
+   Router --> PN : hash key
+ }
+ Messages ..> Router : PK determines partition
+
+ note bottom of Messages
+   Query by chat + month bucket and sort key cursor.
+   New month uses a new PK; avoids unbounded partition history.
+ end note
+ note bottom of Router
+   DynamoDB manages physical partitions automatically.
+   Hot chat is bounded by max group size and per-chat rate limit;
+   consider sub-buckets only after observing throttling.
+ end note
+@enduml
