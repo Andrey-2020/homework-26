@@ -1,0 +1,298 @@
+openapi: 3.0.3
+info:
+  title: GroupWave REST API
+  version: 1.0.0
+  description: REST API для управления групповыми чатами, истории, синхронизации и медиа.
+servers:
+  - url: https://api.groupwave.example
+security:
+  - bearerAuth: []
+tags:
+  - name: Chats
+  - name: Messages
+  - name: Media
+paths:
+  /v1/chats:
+    post:
+      tags: [Chats]
+      summary: Создать групповой чат
+      operationId: createGroupChat
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChatRequest'
+            example:
+              title: "Выезд на выходных"
+              memberIds: ["usr_7012", "usr_8821", "usr_1975"]
+      responses:
+        '201':
+          description: Группа создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+              example:
+                chatId: "chat_73a1"
+                type: group
+                title: "Выезд на выходных"
+                memberCount: 4
+                createdAt: "2026-10-24T18:00:00Z"
+        '400':
+          description: Некорректное тело или превышен лимит участников
+        '401':
+          description: Не авторизован
+  /v1/chats/{chatId}/messages:
+    get:
+      tags: [Messages]
+      summary: Получить историю сообщений чата
+      operationId: getChatMessages
+      parameters:
+        - name: chatId
+          in: path
+          required: true
+          schema: { type: string }
+          example: "chat_73a1"
+        - name: cursor
+          in: query
+          required: false
+          description: Возвращать сообщения новее указанного курсора; курсор получен из ответа предыдущего запроса.
+          schema: { type: string }
+          example: "2026-10-24T18:00:00Z#msg_5af8"
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+      responses:
+        '200':
+          description: Страница истории
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessagePage'
+              example:
+                chatId: "chat_73a1"
+                items:
+                  - messageId: "msg_91bd"
+                    senderId: "usr_7012"
+                    text: "Встречаемся у входа в 19:30"
+                    createdAt: "2026-10-24T18:30:12Z"
+                    cursor: "2026-10-24T18:30:12Z#msg_91bd"
+                nextCursor: "2026-10-24T18:30:12Z#msg_91bd"
+        '403':
+          description: Пользователь не является участником чата
+        '404':
+          description: Чат не найден
+  /v1/media/upload-url:
+    post:
+      tags: [Media]
+      summary: Получить временный URL для загрузки медиа
+      operationId: createMediaUploadUrl
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadUrlRequest'
+            example:
+              chatId: "chat_73a1"
+              fileName: "map.png"
+              contentType: "image/png"
+              sizeBytes: 184320
+              checksumSha256: "b9e2...demo...72ac"
+      responses:
+        '201':
+          description: URL подготовлен; объект ещё не считается доступным, пока загрузка не проверена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadUrlResponse'
+              example:
+                mediaId: "med_4ce2"
+                uploadUrl: "https://s3.example/presigned/demo"
+                expiresAt: "2026-10-24T18:35:00Z"
+                maxSizeBytes: 52428800
+        '400':
+          description: Тип/размер файла не поддерживается
+        '403':
+          description: Нет права писать в этот чат
+  /v1/chats/{chatId}/members:
+    post:
+      tags: [Chats]
+      summary: Пригласить участника в группу
+      operationId: inviteChatMember
+      parameters:
+        - name: chatId
+          in: path
+          required: true
+          schema: { type: string }
+          example: "chat_73a1"
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteMemberRequest'
+            example:
+              userId: "usr_4408"
+              role: member
+      responses:
+        '201':
+          description: Участник добавлен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  chatId: { type: string }
+                  userId: { type: string }
+                  status: { type: string, enum: [ACTIVE] }
+              example:
+                chatId: "chat_73a1"
+                userId: "usr_4408"
+                status: ACTIVE
+        '403':
+          description: Только owner/admin может приглашать участников
+        '409':
+          description: Лимит группы достигнут или пользователь уже состоит в группе
+  /v1/chats/sync:
+    post:
+      tags: [Messages]
+      summary: Синхронизировать сообщения после reconnect
+      operationId: syncChats
+      description: Принимает курсоры нескольких чатов и возвращает новые сообщения. Максимум 100 чатов за один вызов.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncRequest'
+            example:
+              chats:
+                - chatId: "chat_73a1"
+                  cursor: "2026-10-24T18:00:00Z#msg_5af8"
+                - chatId: "chat_2b09"
+                  cursor: null
+      responses:
+        '200':
+          description: Результат синхронизации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+              example:
+                results:
+                  - chatId: "chat_73a1"
+                    items: []
+                    nextCursor: "2026-10-24T18:30:12Z#msg_91bd"
+        '400':
+          description: Больше 100 чатов или некорректные cursor
+        '403':
+          description: Не участник одного из чатов
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Повтор с тем же ключом не должен создавать второй чат/upload/invite.
+      schema:
+        type: string
+        example: "idem_1c8d7f3a"
+  schemas:
+    CreateChatRequest:
+      type: object
+      required: [title, memberIds]
+      properties:
+        title: { type: string, maxLength: 120 }
+        memberIds:
+          type: array
+          uniqueItems: true
+          maxItems: 299
+          items: { type: string }
+    ChatResponse:
+      type: object
+      properties:
+        chatId: { type: string }
+        type: { type: string, enum: [group] }
+        title: { type: string }
+        memberCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+    MessageItem:
+      type: object
+      properties:
+        messageId: { type: string }
+        senderId: { type: string }
+        text: { type: string, maxLength: 4000 }
+        mediaIds:
+          type: array
+          items: { type: string }
+        createdAt: { type: string, format: date-time }
+        cursor: { type: string }
+    MessagePage:
+      type: object
+      properties:
+        chatId: { type: string }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/MessageItem' }
+        nextCursor: { type: string, nullable: true }
+    UploadUrlRequest:
+      type: object
+      required: [chatId, fileName, contentType, sizeBytes]
+      properties:
+        chatId: { type: string }
+        fileName: { type: string, maxLength: 255 }
+        contentType: { type: string }
+        sizeBytes: { type: integer, minimum: 1, maximum: 52428800 }
+        checksumSha256: { type: string }
+    UploadUrlResponse:
+      type: object
+      properties:
+        mediaId: { type: string }
+        uploadUrl: { type: string, format: uri }
+        expiresAt: { type: string, format: date-time }
+        maxSizeBytes: { type: integer }
+    InviteMemberRequest:
+      type: object
+      required: [userId]
+      properties:
+        userId: { type: string }
+        role: { type: string, enum: [member], default: member }
+    SyncRequest:
+      type: object
+      required: [chats]
+      properties:
+        chats:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [chatId]
+            properties:
+              chatId: { type: string }
+              cursor: { type: string, nullable: true }
+    SyncResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              chatId: { type: string }
+              items:
+                type: array
+                items: { $ref: '#/components/schemas/MessageItem' }
+              nextCursor: { type: string, nullable: true }

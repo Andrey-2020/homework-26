@@ -1,0 +1,51 @@
+@startuml
+ title GroupWave — репликация и региональный DR
+ left to right direction
+ skinparam shadowing false
+ skinparam packageStyle rectangle
+ skinparam defaultFontSize 12
+
+ cloud "DNS / Traffic Manager\nactive region routing" as DNS
+ package "Region A — PRIMARY / active writer" as A {
+   rectangle "Application services\nGateway / Message / Chat" as AppA
+   database "DynamoDB messages\nPrimary writer" as DDBA
+   database "PostgreSQL Multi-AZ\nPrimary + standby" as PGA
+   queue "MSK Kafka\nRF=3, min ISR=2" as KafkaA
+   database "S3 media bucket\nversioning" as S3A
+ }
+ package "Region B — DR / warm standby" as B {
+   rectangle "Minimum standby apps\nscaled up during DR" as AppB
+   database "DynamoDB replica\nwrite disabled until fencing" as DDBB
+   database "PostgreSQL async replica" as PGB
+   queue "Kafka DR cluster" as KafkaB
+   database "S3 replica bucket" as S3B
+ }
+
+ DNS --> AppA : normal traffic
+ AppA --> DDBA : message write
+ AppA --> PGA : users / groups
+ AppA --> KafkaA : publish / consume
+ AppA --> S3A : media access
+ DDBA ..> DDBB : Global Tables / stream replication
+ PGA ..> PGB : async WAL / backup replication
+ KafkaA ..> KafkaB : cross-region replication
+ S3A ..> S3B : S3 CRR
+ DNS ..> AppB : switch after DR declared
+ AppB --> DDBB : enable writes only after fencing old region
+ AppB --> PGB : promote after validation
+ AppB --> KafkaB : switch producers/consumers
+ AppB --> S3B : use replicated media
+
+ note bottom of A
+   Local HA: PostgreSQL Multi-AZ;
+   Kafka RF=3; managed DynamoDB durability.
+ end note
+ note bottom of B
+   Secondary region is not an independent active writer in normal operation.
+   Incident Commander declares DR; SRE fences Region A before enabling writes here.
+ end note
+ legend bottom
+   Solid = normal request path; dotted = asynchronous replication/failover path.
+   RPO targets are limits to test, not a guarantee inferred only from this diagram.
+ endlegend
+@enduml

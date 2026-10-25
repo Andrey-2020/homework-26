@@ -1,0 +1,35 @@
+@startuml
+!define RECTANGLE class
+left to right direction
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam defaultTextAlignment center
+skinparam wrapWidth 220
+skinparam maxMessageSize 160
+
+actor "Пользователь" as User
+actor "Оператор платформы" as Ops
+rectangle "Мессенджер" as System {
+  note right of System
+    Отправка и доставка сообщений,
+    личные/групповые чаты, история,
+    вложения, presence и push.
+  end note
+}
+cloud "Почтовый провайдер" as Mail
+cloud "APNs / FCM" as Push
+cloud "Web Push Service" as WebPush
+cloud "S3 Object Storage" as Storage
+
+User <--> System : HTTPS / WSS
+Ops --> System : HTTPS admin + MFA
+System --> Mail : HTTPS API / SMTP
+System --> Push : HTTPS API
+System --> WebPush : HTTPS + VAPID
+User <--> Storage : HTTPS PUT / GET\n(presigned URL)
+
+legend bottom
+  Сплошные связи — внешние взаимодействия.
+  Хранилище объектов используется напрямую клиентами по временной ссылке.
+endlegend
+@enduml

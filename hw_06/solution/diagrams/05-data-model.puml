@@ -1,0 +1,82 @@
+@startuml
+hide circle
+skinparam shadowing false
+skinparam linetype ortho
+
+entity "users" as users {
+  * user_id : UUID <<PK>>
+  --
+  login : string <<unique>>
+  created_at : timestamptz
+  status : string
+}
+entity "devices" as devices {
+  * device_id : UUID <<PK>>
+  --
+  user_id : UUID <<FK>>
+  push_token : string
+  revoked_at : timestamptz
+}
+entity "chats" as chats {
+  * chat_id : UUID <<PK>>
+  --
+  type : direct/group
+  title : string
+  created_by : UUID
+  created_at : timestamptz
+}
+entity "chat_members" as members {
+  * chat_id : UUID <<PK,FK>>
+  * user_id : UUID <<PK,FK>>
+  --
+  role : string
+  joined_at : timestamptz
+  muted : boolean
+}
+entity "messages (sharded)" as messages {
+  * chat_id : UUID <<PK>>
+  * message_seq : bigint <<PK>>
+  --
+  message_id : UUID <<unique>>
+  sender_id : UUID
+  client_message_id : UUID
+  text : text
+  media_id : UUID
+  created_at : timestamptz
+  edited_at : timestamptz
+  deleted : boolean
+}
+entity "read_cursors" as cursors {
+  * chat_id : UUID <<PK>>
+  * user_id : UUID <<PK>>
+  --
+  last_read_seq : bigint
+  updated_at : timestamptz
+}
+entity "media_objects" as media {
+  * media_id : UUID <<PK>>
+  --
+  object_key : string
+  size_bytes : bigint
+  sha256 : string
+  created_at : timestamptz
+  expires_at : timestamptz
+}
+entity "outbox" as outbox {
+  * event_id : UUID <<PK>>
+  --
+  chat_id : UUID
+  message_id : UUID
+  published_at : timestamptz
+}
+
+users ||--o{ devices
+users ||--o{ members
+chats ||--o{ members
+chats ||--o{ messages
+users ||--o{ messages : sender
+chats ||--o{ cursors
+users ||--o{ cursors
+media |o--o{ messages
+messages ||--o| outbox
+@enduml
